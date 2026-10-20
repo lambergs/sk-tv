@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- YouTube needs a Referer to identify the embedding page (otherwise: error 153) -->
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>eastla_tv screen</title>
+    <link rel="stylesheet" href="player.css">
+</head>
+<body>
+<div id="stage">
+    <div id="ytWrap" class="layer"><div id="yt"></div></div>
+    <div id="tw" class="layer"></div>
+    <video id="video" class="layer" playsinline preload="auto"></video>
+    <img id="image" class="layer" alt="">
+
+    <div id="audio" class="layer">
+        <div class="audio-bg" id="audioBg"></div>
+        <div class="audio-card">
+            <div class="audio-art" id="audioArt"><span class="note">&#9835;</span></div>
+            <div class="audio-meta">
+                <div class="audio-label">NOW PLAYING</div>
+                <div class="audio-title" id="audioTitle"></div>
+                <div class="audio-sub" id="audioSub"></div>
+                <div class="eq" id="eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="idle" class="layer">
+        <div class="glow g1"></div>
+        <div class="glow g2"></div>
+        <div class="idle-clock" id="clock">00:00</div>
+        <div class="idle-center">
+            <div class="wordmark"><span id="brandName">STREETKINGS</span><b id="brandAccent">TV</b></div>
+            <div class="idle-line"></div>
+            <div class="idle-tag" id="brandTag">Grab the remote to start watching</div>
+        </div>
+        <div class="idle-foot">STANDBY</div>
+    </div>
+
+    <div id="loading" class="overlay">
+        <div class="spinner"></div>
+        <div class="loading-text">Tuning in…</div>
+    </div>
+
+    <div id="notice" class="overlay">
+        <div class="notice-card">
+            <div class="notice-icon">!</div>
+            <div class="notice-text" id="noticeText"></div>
+        </div>
+    </div>
+
+    <div id="karaoke" class="kbar">
+        <div class="k-note">&#9835;</div>
+        <div class="k-main">
+            <div class="k-label">NOW SINGING</div>
+            <div class="k-singer" id="kSinger"></div>
+        </div>
+        <div class="k-next" id="kNext"></div>
+    </div>
+
+    <div id="score" class="overlay">
+        <div class="score-card">
+            <div class="score-label">VIDEOKE SCORE</div>
+            <div class="score-singer" id="scSinger"></div>
+            <div class="score-num"><span id="scNum">0</span><small>/100</small></div>
+            <div class="score-grade" id="scGrade"></div>
+            <div class="score-song" id="scSong"></div>
+        </div>
+    </div>
+
+    <div id="pausedBadge" class="badge paused">&#10074;&#10074; PAUSED</div>
+    <div id="liveBadge" class="badge live"><i></i>LIVE</div>
+    <div id="bug" class="bug"><span id="bugMark">SK</span><b id="bugAccent">TV</b></div>
+</div>
+<script src="player.js"></script>
+</body>
+</html>
