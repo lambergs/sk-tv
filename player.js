@@ -30,7 +30,7 @@
         image: 'The image could not be loaded',
     };
 
-    const cfg = { tolerance: 1.5, branding: {} };
+    const cfg = { tolerance: 1.5, branding: {}, hideAds: true };
     const desired = { playing: false, pos: 0, at: performance.now() };
 
     let screenId = null;
@@ -38,6 +38,7 @@
     let mode = null;        // youtube | twitch | video | audio | image
     let volume = 0;         // 0-100, already attenuated by the game
     let holdMute = false;   // stay silent until a paused load has been paused
+    let adHold = false;     // YouTube picture covered and muted until the real video plays (ads)
     let firstPlayUid = null;
     let endedUid = null;
     let errorUid = null;
@@ -90,7 +91,7 @@
     function loading(on) {
         clearTimeout(loadingTimer);
         // Twitch refuses to autoplay when anything is drawn over its player, so no overlay for it
-        if (on && mode !== 'twitch') {
+        if (on && mode !== 'twitch' && !adHold) {
             loadingTimer = setTimeout(() => $('loading').classList.add('on'), 350);
         } else {
             $('loading').classList.remove('on');
@@ -191,6 +192,7 @@
                         playsinline: 1, modestbranding: 1, cc_load_policy: 0, enablejsapi: 1,
                         widget_referrer: location.href,
                     };
+                    if (adHold) vars.mute = 1; // silent from the first frame, unmuted once the video itself plays
                     if (!m.live) vars.start = startAt;
                     if (location.origin && location.origin !== 'null') vars.origin = location.origin;
                     yt.player = new window.YT.Player('yt', {
@@ -230,8 +232,7 @@
             yt.state = e.data;
             if (!media || mode !== 'youtube') return;
             if (e.data === YT_PLAYING) {
-                loading(false);
-                firstPlay();
+                loading(false); // firstPlay waits for adTick: the state alone can't tell an ad from the video
             } else if (e.data === YT_BUFFERING) {
                 loading(true);
             } else if (e.data === YT_PAUSED) {
@@ -265,7 +266,7 @@
         applyVolume() {
             if (!yt.usable()) return;
             try {
-                const v = holdMute ? 0 : Math.round(volume);
+                const v = holdMute || adHold ? 0 : Math.round(volume);
                 yt.player.setVolume(v);
                 if (v > 0) yt.player.unMute(); else yt.player.mute();
             } catch (e) { /* ignore */ }
@@ -279,6 +280,139 @@
             } catch (e) { /* ignore */ }
         },
     };
+
+    // ------------------------------------------------------------------ YouTube ads
+    // FiveM's browser lets this page look inside the YouTube frame (the same access qs-3dsound uses to grab
+    // its <video>). When that works, an ad is seen the moment it starts and skipped: jumped to its end and
+    // the skip button pressed, under the cover and muted. If the frame can't be reached, the fallback is the
+    // video's own clock: it stands still during an ad (or a long buffer), so the TV stays covered and muted
+    // until it runs at normal speed.
+
+    const AD_HOLD_MAX = 90000; // clock fallback only: never keep the cover up longer than this
+    const ad = { lastT: NaN, runs: 0, stillSince: 0, heldSince: 0, gaveUp: false };
+
+    // YouTube's own overlays a TV shouldn't show: title bar, logo, "more videos", end-screen cards, ad banners
+    const YT_CSS = '.ytp-chrome-top,.ytp-gradient-top,.ytp-watermark,.ytp-pause-overlay,.html5-endscreen,'
+        + '.ytp-ce-element,.ytp-cards-teaser,.ytp-cards-button,.ytp-paid-content-overlay,.iv-branding,'
+        + '.ytp-suggested-action,.ytp-ad-module,.ytp-ad-overlay-container,.ytp-ad-player-overlay'
+        + '{display:none!important}';
+    const SKIP_BUTTONS = '.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern';
+    const hookedFrames = new WeakSet();
+
+    function ytFrame() {
+        try {
+            const f = $('ytWrap').querySelector('iframe');
+            const doc = f && f.contentWindow && f.contentWindow.document;
+            return doc && doc.body ? doc : null;
+        } catch (e) {
+            return null; // normal browser rules: the frame is off limits
+        }
+    }
+
+    function adShowing(doc) {
+        const p = doc.querySelector('.html5-video-player');
+        return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
+    }
+
+    function near(a, b) { return a > 0 && b > 0 && Math.abs(a - b) < 2; }
+
+    function skipAd(doc) {
+        const v = doc.querySelector('.html5-video-player video') || doc.querySelector('video');
+        if (v) {
+            const d = v.duration;
+            let real = media && media.duration ? media.duration : 0;
+            if (!real) { try { real = yt.player.getDuration() || 0; } catch (e) { /* ignore */ } }
+            // only jump when this really is a separate ad clip, never inside the video itself
+            if (Number.isFinite(d) && d > 0.5 && d < 240 && !near(d, real) && v.currentTime < d - 0.3) {
+                try { v.currentTime = d - 0.1; } catch (e) { /* ignore */ }
+            }
+        }
+        doc.querySelectorAll(SKIP_BUTTONS).forEach((b) => { try { b.click(); } catch (e) { /* ignore */ } });
+    }
+
+    function onAd(doc) {
+        if (cfg.hideAds === false) return;
+        ad.gaveUp = false;
+        ad.runs = 0;
+        ad.lastT = NaN;
+        ad.stillSince = performance.now();
+        setAdHold(true);
+        skipAd(doc);
+    }
+
+    // once per frame: hide YouTube's overlays and react to ads the moment the player flags one
+    function hookFrame(doc) {
+        if (hookedFrames.has(doc)) return;
+        const p = doc.querySelector('.html5-video-player');
+        if (!p) return;
+        hookedFrames.add(doc);
+        try {
+            const style = doc.createElement('style');
+            style.textContent = YT_CSS;
+            (doc.head || doc.documentElement).appendChild(style);
+        } catch (e) { /* ignore */ }
+        try {
+            const MO = (doc.defaultView && doc.defaultView.MutationObserver) || MutationObserver;
+            new MO(() => {
+                if (mode === 'youtube' && adShowing(doc)) onAd(doc);
+            }).observe(p, { attributes: true, attributeFilter: ['class'] });
+        } catch (e) { /* the 500 ms tick still catches it */ }
+    }
+
+    function setAdHold(on) {
+        if (on && (cfg.hideAds === false || ad.gaveUp)) on = false;
+        if (adHold === on) return;
+        adHold = on;
+        if (on) ad.heldSince = performance.now();
+        $('adCover').classList.toggle('on', on);
+        if (on) loading(false);
+        applyVolume();
+    }
+
+    function armAdGuard() {
+        ad.lastT = NaN;
+        ad.runs = 0;
+        ad.gaveUp = false;
+        ad.stillSince = performance.now();
+        setAdHold(true);
+    }
+
+    function adTick() {
+        if (mode !== 'youtube' || !media) {
+            setAdHold(false);
+            return;
+        }
+        if (!yt.usable()) return;
+        const doc = ytFrame();
+        if (doc) {
+            hookFrame(doc);
+            if (adShowing(doc)) {
+                onAd(doc); // again every tick: the skip button only shows up after a few seconds
+                return;
+            }
+        }
+        const now = performance.now();
+        const t = yt.time();
+        const step = t - ad.lastT;
+        ad.lastT = t;
+        // playback moves the clock about 0.5 s per tick; a bigger jump is a seek, not playback
+        ad.runs = step > 0.15 && step < 1.5 ? ad.runs + 1 : 0;
+        if (ad.runs > 0) ad.stillSince = now;
+        if (ad.runs >= 2) {
+            ad.gaveUp = false;
+            setAdHold(false);
+            firstPlay();
+            return;
+        }
+        if (adHold && now - ad.heldSince > AD_HOLD_MAX) {
+            setAdHold(false);
+            ad.gaveUp = true;
+            return;
+        }
+        const shouldRun = desired.playing && endedUid !== media.uid && errorUid !== media.uid;
+        if (!shouldRun) ad.stillSince = now;
+        else if (ad.runs === 0 && now - ad.stillSince > 1000) setAdHold(true);
+    }
 
     // ------------------------------------------------------------------ Twitch
 
@@ -505,16 +639,37 @@
         mm.applyVolume();
     }
 
+    const lastTime = { uid: null, t: 0 };
+    let seekedAt = 0;
+
+    // a fresh state from Lua may seek right away
+    function allowSeek() {
+        lastTime.uid = null;
+        seekedAt = 0;
+    }
+
     function sync() {
         const e = engine();
         if (!e || !media || endedUid === media.uid || errorUid === media.uid) return;
         const isPlaying = e.playing();
-        if (desired.playing && !isPlaying) e.play();
-        else if (!desired.playing && isPlaying) e.pause();
-        if (media.live) return;
+        // a fresh YouTube load runs (covered, muted) until the real video starts, even if the TV is paused,
+        // so any ad gets out of the way; then it pauses / seeks like normal
+        const settling = mode === 'youtube' && firstPlayUid !== media.uid;
+        if ((desired.playing || settling) && !isPlaying) e.play();
+        else if (!desired.playing && isPlaying && !settling) e.pause();
+        if (media.live || settling) return;
         const want = expected();
         if (media.duration && want >= media.duration - 0.5) return; // the server moves on by itself
-        if (Math.abs(e.time() - want) > cfg.tolerance) e.seek(want);
+        const t = e.time();
+        // the video clock standing still while it should play means an ad or buffering is on: don't seek into it
+        const frozen = desired.playing && lastTime.uid === media.uid && Math.abs(t - lastTime.t) < 0.05;
+        lastTime.uid = media.uid;
+        lastTime.t = t;
+        if (frozen || performance.now() - seekedAt < 5000) return;
+        if (Math.abs(t - want) > cfg.tolerance) {
+            seekedAt = performance.now();
+            e.seek(want);
+        }
     }
 
     function firstPlay() {
@@ -551,8 +706,27 @@
         img.onerror = null;
         img.removeAttribute('src');
         mode = null;
+        setAdHold(false);
         loading(false);
         hideNotice();
+    }
+
+    // Same YouTube video again (loop one, or a one-song queue on loop): rewind instead of reloading,
+    // because every reload can bring another ad.
+    function canReplay(m) {
+        return !!media && mode === 'youtube' && m.kind === 'youtube' && m.id === media.id
+            && !m.live && errorUid !== media.uid && yt.usable();
+    }
+
+    function replay(m) {
+        media = Object.assign({}, m);
+        firstPlayUid = null;
+        endedUid = null;
+        errorUid = null;
+        hideNotice();
+        yt.seek(Math.max(0, expected()));
+        yt.play();
+        updateBadges();
     }
 
     function startMedia(m) {
@@ -568,7 +742,8 @@
             case 'youtube':
                 mode = 'youtube';
                 setLayer('ytWrap');
-                loading(true);
+                loading(true); // only shows when Config.HideYoutubeAds is off, the cover has its own spinner
+                armAdGuard();
                 yt.load(media);
                 break;
             case 'twitch':
@@ -674,6 +849,7 @@
         desired.playing = !!d.playing;
         desired.pos = Number(d.position) || 0;
         desired.at = performance.now();
+        allowSeek();
 
         if (!d.power) {
             stopAll();
@@ -695,7 +871,8 @@
         }
 
         if (!media || media.uid !== m.uid) {
-            startMedia(m);
+            if (canReplay(m)) replay(m);
+            else startMedia(m);
             return;
         }
 
@@ -723,6 +900,8 @@
     function applyInit(d) {
         greeted = true;
         cfg.tolerance = Number(d.tolerance) || 1.5;
+        cfg.hideAds = d.hideAds !== false;
+        if (!cfg.hideAds) setAdHold(false);
         const b = d.branding || {};
         cfg.branding = b;
         $('brandName').textContent = b.name || 'STREETKINGS';
@@ -758,6 +937,7 @@
             case 'resync':
                 if (media) {
                     endedUid = null;
+                    allowSeek();
                     sync();
                 }
                 break;
@@ -767,6 +947,7 @@
     });
 
     setInterval(sync, 2000);
+    setInterval(adTick, 500);
     setInterval(tickClock, 15000);
     tickClock();
 

@@ -192,6 +192,8 @@ html, body {
 
 .overlay.on { display: flex; }
 #loading { background: rgba(0, 0, 0, 0.55); }
+/* covers YouTube ads: under notices and badges, fully opaque */
+#adCover { z-index: 4; background: radial-gradient(120% 140% at 15% 10%, #13241f 0%, #0c1013 45%, #07090b 100%); }
 
 .spinner {
     width: 7vw;
